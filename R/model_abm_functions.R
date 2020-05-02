@@ -675,6 +675,7 @@ simulate_pandemic_days <- function(
   initial_infected,
   initial_recovered = tibble(individual_id = "")[0,],
   n_days = 100,
+  is_initial = T,
   scenario = "no_measures",
   inf_period = 5, # Infectious period
   contact_distribution = bind_rows(
@@ -715,6 +716,16 @@ simulate_pandemic_days <- function(
   t_infected <- initial_infected
   t_recovered <- initial_recovered
   
+  if (is_initial) {
+    ts_infected <- tibble(
+      individual_id = "",
+      infected_id = initial_infected$individual_id,
+      infected_at = "",
+      on_day = 0
+    )
+  } else {
+    ts_infected <- tibble()
+  }
   ts_infected <- tibble()
   ts_recovered <- tibble()
   ts_susceptible <- tibble()
@@ -820,7 +831,12 @@ simulate_pandemic_policy_sequence <- function(
   t_infected <- initial_infected
   t_recovered <- initial_recovered
   
-  ts_infected <- tibble()
+  ts_infected <- tibble(
+    individual_id = "",
+    infected_id = initial_infected$individual_id,
+    infected_at = "",
+    on_day = 0
+  )
   ts_recovered <- tibble()
   ts_susceptible <- tibble()
   
@@ -837,6 +853,7 @@ simulate_pandemic_policy_sequence <- function(
       scenario = policy$scenario,
       inf_period = inf_period,
       contact_distribution = contact_distribution, 
+      is_initial = F,
       ...
     )
     
