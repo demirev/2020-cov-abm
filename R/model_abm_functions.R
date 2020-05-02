@@ -2,6 +2,8 @@ library(dplyr)
 library(readr)
 library(purrr)
 library(furrr)
+library(tidyr)
+library(docstring)
 
 plan(multicore(workers = max(1, availableCores() - 1)))
 
@@ -11,7 +13,6 @@ sample_n_safe <- function(data, n) {
 }
 
 generate_population <- function(
-  #' generate a tibble with all agents
   household_distribution = list(
     tibble(n = 800, student = 0, adult = 2, middle_age = 0, pensioner = 0),
     tibble(n = 800, student = 1, adult = 2, middle_age = 0, pensioner = 0),
@@ -38,6 +39,9 @@ generate_population <- function(
   average_workplace_size = 30,
   average_classroom_size = 20
 ) {
+  #' generate a tibble with all agents
+  #' @example {init_pop <- generate_population()}
+  
   population <- household_distribution %>%
     seq_along() %>%
     map(function(i) {
@@ -90,10 +94,10 @@ generate_population <- function(
 generate_initial_infected <- function(
   population,
   n_initial_infections = c(
-    "student" = 10,
-    "adult" = 10,
-    "middle_age" = 10,
-    "pensioner" = 10    
+    "student" = 3,
+    "adult" = 3,
+    "middle_age" = 3,
+    "pensioner" = 3    
   ),
   contact_distribution = bind_rows(
     read_csv("data/contact_distributions_u18.csv") %>%
@@ -103,10 +107,13 @@ generate_initial_infected <- function(
     read_csv("data/contact_distributions_o18.csv") %>%
       mutate(age = "middle_age"),
     read_csv("data/contact_distributions_o18.csv") %>%
-      mutate(age = "pensioner")
+      mutate(age = "pensioner") %>%
+      mutate(e_work = 0) # pensioners don't work
   )
 ) {
   #' sample initial infected population
+  #' @example {init_inf <- generate_initial_infected(init_pop)}
+  
   n_initial_infections %>%
     map2(names(.), function(n_i, a) {
       population %>%
@@ -144,6 +151,7 @@ get_all_parameters <- function(
   met_before_o
 ) {
   #' helper to make the following two functions 'purer'
+  
   params <- list()
   
   params$inf_period <- inf_period
@@ -155,6 +163,7 @@ get_all_parameters <- function(
   params$pt_extra_reduce <- pt_extra_reduce
   
   # Symptomatic and proportion getting tested
+  params$trace_adherence <- trace_adherence
   params$p_tested <- trace_adherence # Proportion who get tested
   params$time_isolate <- isolate_distn # Distribution over symptomatic period
   params$p_symptomatic <- prob_symp
@@ -249,68 +258,13 @@ get_all_parameters <- function(
   params
 }
 
-generate_single_person_parameters <- function(
-  data_ii,
-  params,
-  scenario = "no_measures"
-) {
-  #' all parameters for inididual (generates if first day of infection)
-  # Decide if child or adult
-  if (data_ii$age == "student") {
-    met_before_w <- 0.9
-    wfh_t <- F # working from home?
-  } else {
-    met_before_w <- params$met_before_w
-  }
-  
-  # Simulate infectious period
-  # Decide if symptomatic & tested
-  if (data_ii$infected_since == 0) {
-    wfh_t <- runif(1) < params$wfh_prob # working from home?
-    phone_T <- runif(1) < params$phone_coverage # has phone app?
-    symp_T <- runif(1) < params$p_symptomatic # syptomatic?
-    tested_T <- runif(1) < params$p_tested # would be tested
-    
-    # Set infectious period based on symptomatic & tested
-    if (tested_T & symp_T & params$do_isolation) {
-      inf_period_ii <- sample(0:params$inf_period, 1, prob = params$time_isolate)
-    } else {
-      inf_period_ii <- params$inf_period
-    }
-    
-    # Set infectious period for population testing
-    if (scenario == "pop_testing" & runif(1) < params$p_pop_test) {
-      inf_period_ii <- sample(c(0:params$inf_period,5),1) # Include extra day to reflect week
-      tested_T <- T
-    }
-    
-    # Extra transmission reduction
-    if (scenario=="pt_extra" & runif(1) < params$pt_extra) {
-      tested_T <- T
-      extra_red <- (1 - params$pt_extra_reduce) # Multiple by both
-    } else {
-      extra_red <- 1
-    }
-    
-    data_ii$wfh <- wfh_t
-    data_ii$phone <- phone_T
-    data_ii$symp <- symp_T
-    data_ii$tested <- tested_T
-    data_ii$inf_period <- inf_period_ii
-    data_ii$extra_red <- extra_red
-    data_ii$met_before_w <- met_before_w
-    
-  }
-  
-  return(data_ii)
-}
-
 generate_per_person_parameters <- function(
   infected,
   params,
   scenario = "no_measures"
 ) {
   #' all parameters for the infected population
+  
   infected %>%
     bind_rows(
       tibble(
@@ -381,157 +335,235 @@ generate_per_person_parameters <- function(
     )
 }
 
-simulate_single_person_infections <- function(
-  data_ii,
+simulate_per_person_infections <- function(
+  infected,
   params,
   population = population,
-  infected = infected,
   recovered = recovered,
   scenario = "no_measures"
 ) {
-  #' all contacts and infections due to a single individual
-  wfh_t <- data_ii$wfh
-  phone_T <- data_ii$phone
-  symp_T <- data_ii$symp
-  tested_T <- data_ii$tested
-  inf_period_ii <- data_ii$inf_period
-  extra_red <- data_ii$extra_red  
-  met_before_w <- data_ii$met_before_w
+  #' all contacts and infections due to a cohort of infected individuals
   
-  # Set relative transmission of asymptomatics
-  if (symp_T) {
-    inf_propn <- 1
-  } else {
-    inf_propn <- params$transmission_asymp
-  }
-  
-  # Check if contacts phone traced (in cell phone scenario):
-  if (scenario=="cell_phone" | scenario=="cell_phone_met_limit") {
-    if (phone_T) {
-      ww_trace <- params$phone_coverage # Tracing at work
-      other_trace <- params$phone_coverage # Tracing others
-    } else {
-      ww_trace <- 0 # Tracing at work
-      other_trace <- 0 # Tracing others
-    }
-  } else {
-    ww_trace <- params$ww_trace
-    other_trace <- params$other_trace
-  }
-  
-  # Proportion infectious
-  if (inf_period_ii < data_ii$infected_since) {
-    inf_ratio = 0 # this individual can no longer transmit
-  } else {
-    inf_ratio = 1
-  }
-  
-  # Tally contacts
-  if (data_ii$infected_since == 0) {
-    home_c <- sum(population$household_id == data_ii$household_id)
-  } else {
-    home_c <- 0
-  } # assume all home exposure happens on day 1
-  work_c <- data_ii$e_work
-  other_c <- data_ii$e_other
-  
-  # Fix NA entries
-  if (is.na(home_c)) {home_c <- 0}
-  if (is.na(work_c)) {work_c <- 0}
-  #if is.na(school_c)) {school_c <- 0}
-  if (is.na(other_c)) {other_c <- 0}
-  
-  scale_other <- min(1,(params$max_contacts/other_c)) # scale down based on max other contacts
-  
-  # draw ids of contacts
-  home_c_id <- population %>%
-    filter(household_id == data_ii$household_id) %>% # everybody in the household
-    filter(individual_id != data_ii$individual_id) %>%
-    pull(individual_id)
-  work_c_id <- population %>%
-    filter(workplace_id == data_ii$workplace_id) %>% # out of everybody in the workplace...
-    filter(individual_id != data_ii$individual_id) %>%
-    sample_n_safe(work_c) %>% # first sample n contacts
-    filter(!individual_id %in% recovered$individual_id) %>% # then check only susceptibles
-    filter(!individual_id %in% infected$individual_id) %>%
-    pull(individual_id)
-  other_c_id <- population %>%
-    filter(individual_id != data_ii$individual_id) %>%
-    sample_n_safe(other_c) %>% # first sample contacts
-    filter(!individual_id %in% recovered$individual_id) %>% # then check only susceptibles
-    filter(!individual_id %in% infected$individual_id) %>%
-    pull(individual_id)
-  
-  # Generate basic infections
-  home_inf_basic <- rbinom(1, length(home_c_id), prob = params$hh_risk * inf_propn)
-  work_inf_basic <- rbinom(1, length(work_c_id), prob = params$cc_risk * inf_propn)
-  other_inf_basic <- rbinom(1, length(other_c_id), prob = params$cc_risk * inf_propn)
-  rr_basic_ii <- home_inf_basic + work_inf_basic + other_inf_basic
-  
-  # Generate infections
-  inf_ratio_w <- ifelse(wfh_t, 0, inf_ratio) # check if working from home
-  
-  home_infect <- rbinom(1, home_inf_basic, prob = inf_ratio)
-  work_infect <- rbinom(1,work_inf_basic, prob = inf_ratio_w * extra_red)
-  other_infect <- rbinom(1,other_inf_basic, prob = inf_ratio * scale_other * extra_red) # scale by maximum
-  rr_ii <- home_infect + work_infect + other_infect
-  
-  # Contact tracing - tally contacts
-  home_traced <- rbinom(1, length(home_c_id), prob = params$hh_trace)
-  work_traced <- rbinom(1, length(work_c_id), prob = ww_trace * met_before_w) # !met_before_w defined in data_ii
-  other_traced <- rbinom(1, length(other_c), prob = ww_trace * params$met_before_o * scale_other)
-  
-  # Infections averted
-  if (tested_T & symp_T & params$do_tracing) {
-    home_averted <- rbinom(1, home_infect, prob = hh_trace * params$trace_adherence)
-    work_averted <- rbinom(1, work_infect, prob = ww_trace * met_before_w * params$trace_adherence)
-    other_averted <- rbinom(1, other_infect, prob = params$met_before_o * other_trace * params$trace_adherence)
-  }else{
-    home_averted <- 0
-    work_averted <- 0
-    other_averted <- 0
-  }
-  total_averted <- home_averted + work_averted + other_averted
-  rr_reduced <- rr_ii - total_averted
-  
-  # ids of all infected
-  home_i_id <- sample(home_c_id, size = home_infect - home_averted)
-  work_i_id <- sample(work_c_id, size = work_infect - work_averted)
-  other_i_id <- sample(other_c_id, size = other_infect - other_averted)
-  
-  # Trace contacts-of-contacts (i.e. people who were infected before detection)
-  if (scenario  == "no_measures" | scenario =="pop_testing" | scenario == "isolation_only") {
-    total_traced <- 0
-  }
-  
-  if (scenario  == "hh_quaratine_only") {
-    total_traced <- home_traced 
-  }
-  if (scenario  == "hh_work_only") {
-    total_traced <- home_traced + work_traced 
-  }
-  if (scenario =="isolation_manual_tracing_met_only" | scenario == "isolation_manual_tracing_met_limit" | 
-      scenario == "isolation_manual_tracing" | scenario == "cell_phone" | 
-      scenario == "cell_phone_met_limit") {
-    total_traced <- home_traced + work_traced + other_traced 
-  }
-  
-  # outputs
-  tibble(
-    individual_id = data_ii$individual_id,
-    rr = rr_basic_ii, 
-    rr_reduced = rr_reduced,
-    home_infected_reduced = home_infect - home_averted,
-    work_infected_reduced = work_infect - work_averted,
-    other_infected_reduced = other_infect - other_averted,
-    total_traced = total_traced,
-    infected_id = unique(c(home_i_id, work_i_id, other_i_id)),
-    infected_at = c(
-      rep("home", length(home_i_id)),
-      rep("work", length(work_i_id)),
-      rep("other", length(other_i_id))
-    )
-  )
+  infected %>%
+    mutate( # Set relative transmission of asymptomatics
+      inf_propn = ifelse(symp, 1, params$transmission_asymp) 
+    ) %>%
+    mutate( # Check if contacts phone traced (in cell phne scenario):
+      ww_trace = ifelse(
+        scenario == "cell_phone" | scenario == "cell_phone_met_limit",
+        ifelse(phone, params$phone_coverage, 0),
+        params$ww_trace
+      ),
+      other_trace = ifelse(
+        scenario == "cell_phone" | scenario == "cell_phone_met_limit",
+        ifelse(phone, params$phone_coverage, 0),
+        params$other_trace
+      )
+    ) %>%
+    mutate(# Proportion infectious
+      inf_ratio = as.numeric(infected_since <= inf_period)
+    ) %>%
+    mutate( # Tally contacts
+      home_c = map2_dbl(household_id, infected_since, function(hid, infsince) {
+        if (infsince > 0) return(0) # assume all home exposure happens on day 1
+        sum(population$household_id == hid) - 1 # -1 to remove the indivdidual herself
+      }),
+      work_c = ifelse(is.na(e_work), 0, e_work),
+      other_c = ifelse(is.na(e_other), 0, e_other),
+      scale_other = min(1, (params$max_contacts/other_c)) # scale down based on max other contacts
+    ) %>%
+    mutate( # Draw ids of contacts
+      home_c_id = pmap(
+        list(household_id, individual_id, home_c), 
+        function(hid, iid, hc) {
+          population %>%
+            filter(household_id == hid) %>% # everybody in the household
+            filter(individual_id != iid) %>%
+            sample_n_safe(hc) %>%
+            filter(!individual_id %in% recovered$individual_id) %>% # check only susceptibles
+            filter(!individual_id %in% infected$individual_id) %>% # discard if already infected
+            pull(individual_id)
+        }
+      ),
+      work_c_id = pmap(
+        list(workplace_id, individual_id, work_c), 
+        function(wid, iid, wc) {
+          population %>%
+            filter(workplace_id == wid) %>% # out of everybody in the workplace...
+            filter(individual_id != iid) %>%
+            sample_n_safe(wc) %>% # first sample n contacts (!important to do this before the two steps below)
+            filter(!individual_id %in% recovered$individual_id) %>% # then check only susceptibles
+            filter(!individual_id %in% infected$individual_id) %>% # discard if already infected
+            pull(individual_id)
+        }
+      ),
+      other_c_id = pmap(
+        list(individual_id, other_c), 
+        function(iid, oc) {
+          population %>%
+            filter(individual_id != iid) %>%
+            sample_n_safe(oc) %>% # first sample contacts
+            filter(!individual_id %in% recovered$individual_id) %>% # then check only susceptibles
+            filter(!individual_id %in% infected$individual_id) %>%
+            pull(individual_id)
+        }
+      )
+    ) %>%
+    mutate( # Generate basic infections
+      home_inf_basic = rbinom(
+        nrow(infected), 
+        map_dbl(home_c_id, length), 
+        prob = params$hh_risk * inf_propn
+      ),
+      work_inf_basic = rbinom(
+        nrow(infected), 
+        map_dbl(work_c_id, length), 
+        prob = params$cc_risk * inf_propn
+      ),
+      other_inf_basic = rbinom(
+        nrow(infected), 
+        map_dbl(other_c_id, length), 
+        prob = params$cc_risk * inf_propn
+      ),
+      rr_basic = home_inf_basic + work_inf_basic + other_inf_basic
+    ) %>%
+    mutate( # Gnerate infections
+      inf_ratio_w = ifelse(wfh, 0, inf_ratio), # check if working from home
+      home_infect = rbinom(
+        nrow(infected), 
+        home_inf_basic, 
+        prob = inf_ratio
+      ),
+      work_infect = rbinom(
+        nrow(infected), 
+        work_inf_basic, 
+        prob = inf_ratio_w * extra_red
+      ),
+      other_infect = rbinom(
+        nrow(infected),
+        other_inf_basic, 
+        prob = inf_ratio * scale_other * extra_red # scale by maximum
+      ), 
+      rr = home_infect + work_infect + other_infect
+    ) %>%
+    mutate( # Cntact tracing - tally contacts traced
+      home_traced = rbinom(
+        nrow(infected), 
+        map_dbl(home_c_id, length), 
+        prob = params$hh_trace
+      ),
+      work_traced = rbinom(
+        nrow(infected), 
+        map_dbl(work_c_id, length), 
+        prob = ww_trace * met_before_w
+      ), # !met_before_w defined in data not in params
+      other_traced = rbinom(
+        nrow(infected), 
+        map_dbl(other_c_id, length), 
+        prob = params$other_trace * params$met_before_o * scale_other # NOTE: different from AK original code but I suspect it was a mistake in the original
+      )
+    ) %>%
+    mutate( # Infections averted
+      home_averted = ifelse(
+        tested & symp & params$do_tracing,
+        rbinom(
+          nrow(infected),
+          home_infect, # TODO not sure if this should be home_traced instead...
+          prob = params$hh_trace * params$trace_adherence # ... and this just trace_adherence?
+        ),
+        0        
+      ),
+      work_averted = ifelse(
+        tested & symp & params$do_tracing,
+        rbinom(
+          nrow(infected),
+          work_infect,
+          prob = ww_trace * met_before_w * params$trace_adherence
+        ),
+        0
+      ),
+      other_averted = ifelse(
+        tested & symp & params$do_tracing,
+        rbinom(
+          nrow(infected),
+          other_infect,
+          prob = params$met_before_o * params$other_trace * params$trace_adherence
+        ),
+        0
+      ),
+      total_averted = home_averted + work_averted + other_averted,
+      rr_reduced = rr - total_averted
+    ) %>%
+    mutate( # Final ids of all infected
+      home_i_id = pmap(
+        list(home_c_id, home_infect, home_averted),
+        function(ids, i, a) sample(ids, size = i - a)
+      ),
+      work_i_id = pmap(
+        list(work_c_id, work_infect, work_averted),
+        function(ids, i, a) sample(ids, size = i - a)
+      ),
+      other_i_id = pmap(
+        list(other_c_id, other_infect, other_averted),
+        function(ids, i, a) sample(ids, size = i - a)
+      )
+    ) %>%
+    mutate( # Count total traced
+      total_traced = 0,
+      total_traced = ifelse(
+        scenario == "hh_quaratine_only",
+        home_traced,
+        total_traced
+      ),
+      total_traced = ifelse(
+        scenario == "hh_work_only",
+        home_traced + work_traced,
+        total_traced
+      ),
+      total_traced = ifelse(
+        scenario %in% c(
+          "isolation_manual_tracing_met_only", 
+          "isolation_manual_tracing_met_limit",
+          "isolation_manual_tracing", 
+          "cell_phone",
+          "cell_phone_met_limit"
+        ),
+        home_traced + work_traced + other_traced ,
+        total_traced
+      )
+    ) %>%
+    mutate( # Format outputs
+      home_infected_reduced = home_infect - home_averted,
+      work_infected_reduced = work_infect - work_averted,
+      other_infected_reduced = other_infect - other_averted,
+      infected_id = pmap(
+        list(home_i_id, work_i_id, other_i_id),
+        function(h,w,o) c(h,w,o)
+      ),
+      infected_at = pmap(
+        list(home_i_id, work_i_id, other_i_id),
+        function(h,w,o) {
+          c(
+            rep("home", length(h)),
+            rep("work", length(w)),
+            rep("other", length(o))
+          )
+        }
+      )
+    ) %>%
+    select( # Outputs
+      individual_id,
+      rr = rr_basic, 
+      rr_reduced,
+      home_infected_reduced,
+      work_infected_reduced,
+      other_infected_reduced,
+      total_traced = total_traced,
+      infected_id,
+      infected_at
+    ) %>%
+    unnest() %>% # unlist infected_id and infected_at columns
+    distinct(infected_id, .keep_all = T) # don't double count people infected by more than 1 person
 }
 
 infect_daily <- function(
@@ -559,6 +591,8 @@ infect_daily <- function(
   met_before_o =  0.52 # In other settings
 ) {
   #' simulate all contacts for all inidividuals in one day
+  #' @example {daily_result <- infect_daily(init_pop, init_inf)}
+  
   scenario_list <- c(
     "no_measures","isolation_only","hh_quaratine_only","hh_work_only",
     "isolation_manual_tracing_met_only","isolation_manual_tracing_met_limit",
@@ -595,27 +629,16 @@ infect_daily <- function(
   
   # update infection paramteres
   infected <- infected %>%
-    split(1:nrow(.)) %>%
-    future_map(
-      generate_single_person_parameters,
-      params = params,
-      scenario = scenario
-    ) %>%
-    reduce(bind_rows)
+    generate_per_person_parameters(params = params, scenario = scenario)
   
   # simulate infections
   daily_r <- infected %>%
-    split(1:nrow(.)) %>%
-    future_map(
-      simulate_single_person_infections,
-      scenario = scenario,
+    simulate_per_person_infections(
       params = params,
       population = population,
-      infected = infected,
-      recovered = recovered
-    ) %>%
-    reduce(bind_rows) %>%
-    distinct(individual_id, .keep_all = T) # don't double count if someone is infected by two different people
+      recovered = recovered,
+      scenario = scenario
+    )
   
   return(list(daily_r = daily_r, infected = infected))
   
@@ -631,7 +654,8 @@ draw_contact_rates <- function(
     read_csv("data/contact_distributions_o18.csv") %>%
       mutate(age = "middle_age"),
     read_csv("data/contact_distributions_o18.csv") %>%
-      mutate(age = "pensioner")
+      mutate(age = "pensioner") %>%
+      mutate(e_work = 0) # pensioners don't work
   )
 ) {
   #' helper - draw contact rates for newly infected
@@ -647,10 +671,10 @@ draw_contact_rates <- function(
 }
 
 simulate_pandemic_days <- function(
-  n_days = 100,
   initial_population,
   initial_infected,
   initial_recovered = tibble(individual_id = "")[0,],
+  n_days = 100,
   scenario = "no_measures",
   inf_period = 5, # Infectious period
   contact_distribution = bind_rows(
@@ -661,7 +685,8 @@ simulate_pandemic_days <- function(
     read_csv("data/contact_distributions_o18.csv") %>%
       mutate(age = "middle_age"),
     read_csv("data/contact_distributions_o18.csv") %>%
-      mutate(age = "pensioner")
+      mutate(age = "pensioner") %>%
+      mutate(e_work = 0) # pensioners don't work
   ), 
   # max_low_fix = 4, # Social distancing limit in these scenarios
   # wfh_prob = 0, # Probability people are working from home
@@ -683,6 +708,8 @@ simulate_pandemic_days <- function(
   # met_before_o =  0.52 # In other settings
   ...
 ) {
+  #' simulate a number of days since the pandemic outbreak
+  #' @example {result <- simulate_pandemic_days(init_pop, init_inf, n_days = 10)}
   
   t_population <- initial_population
   t_infected <- initial_infected
@@ -751,20 +778,142 @@ simulate_pandemic_days <- function(
   return(list(
     "final_population" = t_population,
     "final_infected" = t_infected,
-    "final_recovred" = t_recovered,
+    "final_recovered" = t_recovered,
     "s_ts" = ts_susceptible,
     "i_ts" = ts_infected,
     "r_ts" = ts_recovered
   ))
 } 
 
+simulate_pandemic_policy_sequence <- function(
+  initial_population,
+  initial_infected,
+  initial_recovered = tibble(individual_id = "")[0,],
+  policy_sequence = list(
+    list(scenario = "no_measures", n_days = 20)
+  ),
+  inf_period = 5, # Infectious period
+  contact_distribution = bind_rows(
+    read_csv("data/contact_distributions_u18.csv") %>%
+      mutate(age = "student"),
+    read_csv("data/contact_distributions_o18.csv") %>%
+      mutate(age = "adult"),
+    read_csv("data/contact_distributions_o18.csv") %>%
+      mutate(age = "middle_age"),
+    read_csv("data/contact_distributions_o18.csv") %>%
+      mutate(age = "pensioner") %>%
+      mutate(e_work = 0) # pensioners don't work
+  ),
+  ...
+) {
+  #' simulate a sequence of different intervention policies
+  #' @example {result_sequence <- simulate_pandemic_policy_sequence(
+  #' init_pop, init_inf, 
+  #' policy_sequence = list(
+  #' list(scenario = "no_measures", n_days = 5),
+  #' list(scenario = "no_measures", n_days = 5)
+  #' )
+  #' )
+  #' }
+  
+  t_population <- initial_population
+  t_infected <- initial_infected
+  t_recovered <- initial_recovered
+  
+  ts_infected <- tibble()
+  ts_recovered <- tibble()
+  ts_susceptible <- tibble()
+  
+  days_to_add <- 0
+  
+  for (policy in policy_sequence) {
+    
+    # simulat policy for policy duration days
+    policy_results <- simulate_pandemic_days(
+      initial_population = t_population,
+      initial_infected = t_infected,
+      initial_recovered = t_recovered,
+      n_days = policy$n_days,
+      scenario = policy$scenario,
+      inf_period = inf_period,
+      contact_distribution = contact_distribution, 
+      ...
+    )
+    
+    # update SIR info
+    t_infected <- policy_results$final_infected
+    t_recovered <- policy_results$final_recovered
+    
+    # record flows
+    ts_infected <- bind_rows(
+      ts_infected, 
+      mutate(policy_results$i_ts, on_day = on_day + days_to_add)
+    )
+    ts_recovered <- bind_rows(
+      ts_recovered, 
+      mutate(policy_results$r_ts, on_day = on_day + days_to_add)
+    )
+    ts_susceptible <- bind_rows(
+      ts_susceptible,
+      mutate(policy_results$s_ts, on_day = on_day + days_to_add)
+    )
+    
+    days_to_add <- days_to_add + policy$n_days
+  }
+  
+  return(list(
+    "final_population" = t_population,
+    "final_infected" = t_infected,
+    "final_recovered" = t_recovered,
+    "s_ts" = ts_susceptible,
+    "i_ts" = ts_infected,
+    "r_ts" = ts_recovered
+  ))
+}
 
-# i_ts %>%
-#   group_by(individual_id) %>%
-#   mutate(on_day = on_day[1]) %>%
-#   group_by(individual_id, on_day) %>%
-#   count() %>%
-#   arrange(on_day) %>%
-#   group_by(on_day) %>%
-#   summarize(R0 = mean(n)) %>% pull(R0) %>% plot(type = 'l')
-
+simulate_pandemic_policy_sequence_ntimes <- function(
+  initial_population,
+  initial_infected,
+  initial_recovered = tibble(individual_id = "")[0,],
+  policy_sequence = list(
+    list(scenario = "no_measures", n_days = 20)
+  ),
+  n_times = 10,
+  inf_period = 5, # Infectious period
+  contact_distribution = bind_rows(
+    read_csv("data/contact_distributions_u18.csv") %>%
+      mutate(age = "student"),
+    read_csv("data/contact_distributions_o18.csv") %>%
+      mutate(age = "adult"),
+    read_csv("data/contact_distributions_o18.csv") %>%
+      mutate(age = "middle_age"),
+    read_csv("data/contact_distributions_o18.csv") %>%
+      mutate(age = "pensioner") %>%
+      mutate(e_work = 0) # pensioners don't work
+  ),
+  ...
+) {
+  #' perform n_times simulations using the same parameters
+  #' @example {result_sequence_ntimes <- simulate_pandemic_policy_sequence_ntimes(
+  #' init_pop, init_inf, n_times = 3,
+  #' policy_sequence = list(
+  #' list(scenario = "no_measures", n_days = 5),
+  #' list(scenario = "no_measures", n_days = 5)
+  #' )
+  #' )
+  #' }
+  
+  result <- seq(n_times) %>%
+    future_map(
+      simulate_pandemic_policy_sequence,
+      initial_population = initial_population,
+      initial_infected = initial_infected,
+      initial_recovered = initial_recovered,
+      policy_sequence = policy_sequence,
+      inf_period = inf_period,
+      contact_distribution = contact_distribution,
+      ...
+    )
+  names(result) = paste0("simulation", seq(n_times))
+  result
+}
