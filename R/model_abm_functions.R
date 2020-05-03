@@ -44,24 +44,29 @@ generate_population <- function(
   
   population <- household_distribution %>%
     seq_along() %>%
-    map(function(i) {
+    future_map(function(i) {
       dist <- household_distribution[[i]]
-      map(seq(dist$n), function(n) {
-        tibble(
-          household_id = paste0(i, "_", n),
+      tibble(
+        household_id = rep(
+          paste0(i, "_", 1:dist$n), 
+          each = dist$student + dist$adult + dist$middle_age + dist$pensioner
+        )
+      ) %>%
+        mutate(
           individual_id = paste0(
-            i, "_", n, "_",
-            1:(dist$student + dist$adult + dist$middle_age + dist$pensioner)
+            i, "_", household_id, "_",
+            1:nrow(.)
           ),
-          age = c(
-            rep("student", dist$student), 
-            rep("adult", dist$adult),
-            rep("middle_age", dist$middle_age),
-            rep("pensioner", dist$pensioner)
+          age = rep(
+            c(
+              rep("student", dist$student), 
+              rep("adult", dist$adult),
+              rep("middle_age", dist$middle_age),
+              rep("pensioner", dist$pensioner)
+            ),
+            dist$n
           )
         )
-      }) %>%
-        reduce(bind_rows)
     }) %>%
     reduce(bind_rows) %>%
     mutate(
@@ -335,7 +340,7 @@ generate_per_person_parameters <- function(
     )
 }
 
-simulate_per_person_infections <- function(
+simulate_per_person_infections <- function( 
   infected,
   params,
   population = population,
@@ -344,7 +349,7 @@ simulate_per_person_infections <- function(
 ) {
   #' all contacts and infections due to a cohort of infected individuals
   
-  infected %>%
+  result <- infected %>%
     mutate( # Set relative transmission of asymptomatics
       inf_propn = ifelse(symp, 1, params$transmission_asymp) 
     ) %>%
@@ -371,42 +376,97 @@ simulate_per_person_infections <- function(
       work_c = ifelse(is.na(e_work), 0, e_work),
       other_c = ifelse(is.na(e_other), 0, e_other),
       scale_other = min(1, (params$max_contacts/other_c)) # scale down based on max other contacts
+    )
+
+  # Draw ids of contacts
+  home_c_all_ids <- population %>%
+    right_join(
+      result %>% 
+        select(household_id, home_c, infected_by = individual_id), 
+      by = "household_id"
+    ) %>% # all matching houyseholds to infected
+    anti_join(
+      select(result, household_id, individual_id), 
+      by = c("household_id", "individual_id")
+    ) %>% # remove the individuals doing the infection themselves
+    group_by(household_id) %>%
+    #mutate(home_c = ifelse(home_c > n(), n(), home_c)) %>% # make sure we are not sampling more than the available number
+    sample_n(home_c, replace = F) %>% # sample contacts
+    ungroup() %>%
+    anti_join(
+      select(infected, individual_id), by = "individual_id"
+    ) %>% # remove otherwise infected (! only after sampling contacts)
+    anti_join(
+      select(recovered, individual_id), by = "individual_id"
     ) %>%
-    mutate( # Draw ids of contacts
-      home_c_id = pmap(
-        list(household_id, individual_id, home_c), 
-        function(hid, iid, hc) {
-          population %>%
-            filter(household_id == hid) %>% # everybody in the household
-            filter(individual_id != iid) %>%
-            sample_n_safe(hc) %>%
-            filter(!individual_id %in% recovered$individual_id) %>% # check only susceptibles
-            filter(!individual_id %in% infected$individual_id) %>% # discard if already infected
-            pull(individual_id)
-        }
+    select(infected_by, individual_id) %>%
+    nest(individual_id) %>%
+    rename(home_c_id = data, individual_id = infected_by) %>%
+    mutate(home_c_id = map(home_c_id, ~.$individual_id))
+  
+  work_c_all_ids <- population %>%
+    right_join(
+      result %>% 
+        select(workplace_id, work_c, infected_by = individual_id), 
+      by = "workplace_id"
+    ) %>% # all matching workplaces to infected
+    anti_join(
+      select(result, workplace_id, individual_id), 
+      by = c("workplace_id", "individual_id")
+    ) %>% # remove the individuals doing the infection themselves
+    group_by(workplace_id) %>%
+    mutate(work_c = ifelse(work_c > n(), n(), work_c)) %>% # make sure we are not sampling more than the available number
+    sample_n(work_c, replace = F) %>% # sample contacts
+    ungroup() %>%
+    anti_join(
+      select(infected, individual_id), by = "individual_id"
+    ) %>% # remove otherwise infected (! only after sampling contacts)
+    anti_join(
+      select(recovered, individual_id), by = "individual_id"
+    ) %>%
+    select(infected_by, individual_id) %>%
+    nest(individual_id) %>%
+    rename(work_c_id = data, individual_id = infected_by) %>%
+    mutate(work_c_id = map(work_c_id, ~.$individual_id))
+  
+  other_c_all_ids <- result$other_c %>%
+    map2(result$individual_id, function(oc, id) {
+      res <- sample_n(population, oc)
+      if (nrow(res)) res <- mutate(res, infected_by = id)
+      res
+    }) %>%
+    reduce(bind_rows) %>%
+    anti_join(
+      select(infected, individual_id), by = "individual_id"
+    ) %>% # remove otherwise infected (! only after sampling contacts)
+    anti_join(
+      select(recovered, individual_id), by = "individual_id"
+    ) %>%
+    select(infected_by, individual_id) %>%
+    nest(individual_id) %>%
+    rename(other_c_id = data, individual_id = infected_by) %>%
+    mutate(other_c_id = map(other_c_id, ~.$individual_id))
+  
+  
+  result <- result %>%
+    left_join(home_c_all_ids, by = "individual_id") %>%
+    left_join(work_c_all_ids, by = "individual_id") %>%
+    left_join(other_c_all_ids, by = "individual_id") %>%
+    mutate( # make sure no null values for id var
+      home_c_id = ifelse(
+        map_lgl(home_c_id, is.null),
+        map(nrow(.), ~c("")[0]),
+        home_c_id
       ),
-      work_c_id = pmap(
-        list(workplace_id, individual_id, work_c), 
-        function(wid, iid, wc) {
-          population %>%
-            filter(workplace_id == wid) %>% # out of everybody in the workplace...
-            filter(individual_id != iid) %>%
-            sample_n_safe(wc) %>% # first sample n contacts (!important to do this before the two steps below)
-            filter(!individual_id %in% recovered$individual_id) %>% # then check only susceptibles
-            filter(!individual_id %in% infected$individual_id) %>% # discard if already infected
-            pull(individual_id)
-        }
+      work_c_id = ifelse(
+        map_lgl(work_c_id, is.null),
+        map(nrow(.), ~c("")[0]),
+        work_c_id
       ),
-      other_c_id = pmap(
-        list(individual_id, other_c), 
-        function(iid, oc) {
-          population %>%
-            filter(individual_id != iid) %>%
-            sample_n_safe(oc) %>% # first sample contacts
-            filter(!individual_id %in% recovered$individual_id) %>% # then check only susceptibles
-            filter(!individual_id %in% infected$individual_id) %>%
-            pull(individual_id)
-        }
+      other_c_id = ifelse(
+        map_lgl(other_c_id, is.null),
+        map(nrow(.), ~c("")[0]),
+        other_c_id
       )
     ) %>%
     mutate( # Generate basic infections
@@ -664,7 +724,7 @@ draw_contact_rates <- function(
     map(function(age_group) {
       contact_distribution %>%
         filter(age == age_group$age) %>%
-        sample_n(age_group$n) %>%
+        sample_n(age_group$n, replace = T) %>%
         bind_cols(filter(tb, age == age_group$age))
     }) %>%
     reduce(bind_rows) 
