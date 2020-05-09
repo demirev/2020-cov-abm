@@ -270,7 +270,7 @@ generate_per_person_parameters <- function(
 ) {
   #' all parameters for the infected population
   
-  infected %>%
+  infected %>% 
     bind_rows(
       tibble(
         wfh = F, phone = F, symp = F, tested = F, inf_period = 5,
@@ -278,27 +278,11 @@ generate_per_person_parameters <- function(
       )[0,] # make sure all columns are present
     ) %>%
     mutate( # for new cases (infected_since == 0) draw parameter values
-      wfh = ifelse(
-        infected_since == 0 & runif(nrow(infected)) < params$wfh_prob,
-        T,
-        wfh
-      ),
+      wfh = infected_since == 0 & runif(nrow(infected)) < params$wfh_prob,
       wfh = ifelse(age == "student", F, wfh), # TODO introdue school vacations
-      phone = ifelse(
-        infected_since == 0 & runif(nrow(infected)) < params$phone_coverage,
-        T,
-        phone
-      ),
-      symp = ifelse(
-        infected_since == 0 & runif(nrow(infected)) < params$p_symptomatic,
-        T,
-        symp
-      ),
-      tested = ifelse(
-        infected_since == 0 & runif(nrow(infected)) < params$p_tested,
-        T,
-        symp
-      ),
+      phone = infected_since == 0 & runif(nrow(infected)) < params$phone_coverage,
+      symp = infected_since == 0 & runif(nrow(infected)) < params$p_symptomatic,
+      tested = infected_since == 0 & runif(nrow(infected)) < params$p_tested,
       inf_period = ifelse(
         infected_since == 0 & symp & params$do_isolation,
         sample(0:params$inf_period, nrow(infected), prob = params$time_isolate, replace = T),
@@ -321,7 +305,7 @@ generate_per_person_parameters <- function(
       ),
       inf_period = ifelse(
         pop_tested_,
-        sample(c(0:params$inf_period,5), nrow(infected)),
+        sample(c(0:params$inf_period,5), nrow(infected), replace = T),
         inf_period
       )
     ) %>%
@@ -345,7 +329,11 @@ simulate_per_person_infections <- function(
   params,
   population = population,
   recovered = recovered,
-  scenario = "no_measures"
+  scenario = "no_measures",
+  household_sizes = population %>%
+    group_by(household_id) %>%
+    count() %>%
+    mutate(home_c = n - 1) # don't count the individual doing the disease spreading
 ) {
   #' all contacts and infections due to a cohort of infected individuals
   
@@ -368,11 +356,12 @@ simulate_per_person_infections <- function(
     mutate(# Proportion infectious
       inf_ratio = as.numeric(infected_since <= inf_period)
     ) %>%
+    left_join(
+      select(household_sizes, household_id, home_c),
+      by = "household_id"
+    ) %>%
     mutate( # Tally contacts
-      home_c = map2_dbl(household_id, infected_since, function(hid, infsince) {
-        if (infsince > 0) return(0) # assume all home exposure happens on day 1
-        sum(population$household_id == hid) - 1 # -1 to remove the indivdidual herself
-      }),
+      home_c = ifelse(infected_since > 0, 0, home_c),
       work_c = ifelse(is.na(e_work), 0, e_work),
       other_c = ifelse(is.na(e_other), 0, e_other),
       scale_other = min(1, (params$max_contacts/other_c)) # scale down based on max other contacts
@@ -429,13 +418,14 @@ simulate_per_person_infections <- function(
     rename(work_c_id = data, individual_id = infected_by) %>%
     mutate(work_c_id = map(work_c_id, ~.$individual_id))
   
-  other_c_all_ids <- result$other_c %>%
-    map2(result$individual_id, function(oc, id) {
-      res <- sample_n(population, oc)
-      if (nrow(res)) res <- mutate(res, infected_by = id)
-      res
-    }) %>%
-    reduce(bind_rows) %>%
+  other_c_all_ids <- population %>%
+    sample_n(
+      sum(result$other_c), 
+      replace = T
+    ) %>% # sample other encounters from entire population (Note: this allows for meeting yourself and potentially meeting the same person twice but the chances are small and checking against that is too comp. expensive)
+    mutate(
+      infected_by = rep(result$individual_id, result$other_c)
+    ) %>%
     anti_join(
       select(infected, individual_id), by = "individual_id"
     ) %>% # remove otherwise infected (! only after sampling contacts)
@@ -631,6 +621,10 @@ infect_daily <- function(
   infected,
   recovered = tibble(id = "")[0,],
   scenario = "no_measures",
+  household_sizes = population %>%
+    group_by(household_id) %>%
+    count() %>%
+    mutate(home_c = n - 1),
   max_low_fix = 4, # Social distancing limit in these scenarios
   wfh_prob = 0, # Probability people are working from home
   trace_prop = 0.95, # Proportion of contacts traced
@@ -697,7 +691,8 @@ infect_daily <- function(
       params = params,
       population = population,
       recovered = recovered,
-      scenario = scenario
+      scenario = scenario,
+      household_sizes = household_sizes
     )
   
   return(list(daily_r = daily_r, infected = infected))
@@ -719,15 +714,27 @@ draw_contact_rates <- function(
   )
 ) {
   #' helper - draw contact rates for newly infected
-  count(tb, age) %>%
-    split(1:nrow(.)) %>%
-    map(function(age_group) {
-      contact_distribution %>%
-        filter(age == age_group$age) %>%
-        sample_n(age_group$n, replace = T) %>%
-        bind_cols(filter(tb, age == age_group$age))
-    }) %>%
-    reduce(bind_rows) 
+  tb_by_age <- count(tb, age)
+  
+  if (nrow(tb_by_age)) {
+    res <- count(tb, age) %>%
+      split(1:nrow(.)) %>%
+      map(function(age_group) {
+        contact_distribution %>%
+          filter(age == age_group$age) %>%
+          sample_n(age_group$n, replace = T) %>%
+          select(-age) %>%
+          bind_cols(filter(tb, age == age_group$age))
+      }) %>%
+      reduce(bind_rows) 
+  } else {
+    res <- bind_cols(
+      tb_by_age,
+      tibble(e_home = 0, e_work = 0, e_other = 0)[0,] # just to have the cols
+    )
+  }
+  
+  res
 }
 
 simulate_pandemic_days <- function(
@@ -748,7 +755,8 @@ simulate_pandemic_days <- function(
     read_csv("data/contact_distributions_o18.csv") %>%
       mutate(age = "pensioner") %>%
       mutate(e_work = 0) # pensioners don't work
-  ), 
+  ),
+  verbose = T,
   # max_low_fix = 4, # Social distancing limit in these scenarios
   # wfh_prob = 0, # Probability people are working from home
   # trace_prop = 0.95, # Proportion of contacts traced
@@ -781,16 +789,22 @@ simulate_pandemic_days <- function(
       individual_id = "",
       infected_id = initial_infected$individual_id,
       infected_at = "",
+      infected_since = 0,
       on_day = 0
     )
   } else {
     ts_infected <- tibble()
-  }
+  } #TODO rembember why I did this... since its immedeately overwritten below
   ts_infected <- tibble()
   ts_recovered <- tibble()
   ts_susceptible <- tibble()
   
-  for (day in seq(n_days)) {cat(".")
+  household_sizes <- t_population %>%
+    group_by(household_id) %>%
+    count() %>%
+    mutate(home_c = n - 1) # this doesn't change so calculate once to save time
+  
+  for (day in seq(n_days)) {
     # get new infections
     daily_infected <- infect_daily(
       population = t_population,
@@ -798,6 +812,7 @@ simulate_pandemic_days <- function(
       recovered = t_recovered,
       scenario = scenario,
       inf_period = inf_period,
+      household_sizes = household_sizes,
       ...
     )
     
@@ -816,20 +831,24 @@ simulate_pandemic_days <- function(
     
     # add new infections
     t_infected <- t_infected %>%
-      filter(infected_since <= inf_period) %>%
-      bind_rows(
-        tibble(
-          individual_id = daily_infected$daily_r$infected_id,
-          infected_since = 0
-        ) %>%
-          left_join(
-            select(
-              t_population, individual_id, household_id, workplace_id, age
-            ), 
-            by = c("individual_id")
+      filter(infected_since <= inf_period) 
+    
+    if (nrow(daily_infected$daily_r)) {
+      t_infected <- t_infected %>%
+        bind_rows(
+          tibble(
+            individual_id = daily_infected$daily_r$infected_id,
+            infected_since = 0
           ) %>%
-          draw_contact_rates(contact_distribution)
-      )
+            left_join(
+              select(
+                t_population, individual_id, household_id, workplace_id, age
+              ), 
+              by = c("individual_id")
+            ) %>%
+            draw_contact_rates(contact_distribution)
+        )
+    }
     
     # record flows
     ts_infected <- bind_rows(
@@ -844,6 +863,10 @@ simulate_pandemic_days <- function(
       ts_susceptible,
       tibble(n = nrow(t_population) - nrow(t_recovered) - nrow(t_infected), on_day = day)
     )
+    
+    if (verbose) {
+      cat(paste0(nrow(daily_infected$daily_r), " infected on day ", day, "\n"))
+    }
   }
   
   return(list(
