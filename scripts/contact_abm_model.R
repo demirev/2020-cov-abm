@@ -80,6 +80,15 @@ simulation_all_scenarios <- c(
     )
   })
 
+names(simulation_all_scenarios) <- c(
+  "isolation_only","hh_quaratine_only","hh_work_only",
+  "isolation_manual_tracing_met_only","isolation_manual_tracing_met_limit",
+  "isolation_manual_tracing","cell_phone","cell_phone_met_limit",
+  "pop_testing","pt_extra"
+)
+
+pA <- plot_different_scenarios(simulation_all_scenarios)
+
 # 3. simulate a complex policy regime many times 
 policy <- list(
   list(scenario = "no_measures", n_days = 10),
@@ -99,6 +108,6 @@ simulation_specific_policy <- simulate_pandemic_policy_sequence_ntimes(
   contact_distribution = contacts
 )
 
+p1 <- plot_multiple_simulations(simulation_specific_policy)
 
-# plot results ------------------------------------------------------------
 
