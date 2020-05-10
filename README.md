@@ -1,6 +1,8 @@
 # Pandemic ABM
 
-This repository contains an implementation of an **agent-based model (ABM)** of transmissible disease spread and prevention. This work is based on a paper by Kucharski et al and is actually a fork of the repo for that paper. The original code before the fork can be found in branch `before_fork`. This work extends this paper to a full-fledged ABM, tracking infection status and simulation social networks.
+This repository contains an implementation of an **agent-based model (ABM)** of transmissible disease spread and prevention. This work is based on a paper by [Kucharski et al](https://www.medrxiv.org/content/10.1101/2020.04.23.20077024v1) and is actually a fork of the [repo](https://github.com/adamkucharski/2020-cov-tracing) for that paper. The original code before the fork can be found in branch `before_fork`. This work extends this paper to a full-fledged ABM, tracking infection status and simulation social networks.
+
+*Disclaimer: I am not an epidemiologist and this work has not been peer-reviewed or in any other way checked or validated. Use at your own judgement.*
 
 # Model Overview
 
@@ -16,13 +18,13 @@ There are four types of agents based on their age group:
 
 Every individual belongs to a **household**. The distribution of household in terms of age makeup and size is determined by the user.
 
-Adults and Middle-aged agents are also assigned to **workplaces**. Children are asigned to 'classrooms' with other children. Pensioners are not assigned to a workplace.
+Adults and Middle-aged agents are also assigned to **workplaces**. Children are assigned to 'classrooms' with other children. Pensioners are not assigned to a workplace.
 
 The simulation progresses in 'days'. It begins with a small number of infected individuals defined by the user. Each day the infected agents interact with others who become exposed to infection:
 
 ![Agent interaction](etc/interactions.png)
 
-I assume that the infected agent meets a number randomly drawn agents from their workplace as well as a number of randomly drawn agents from the population at large. The number of meetings is determiend for each infected agent by drawing an observation from the interaction dataset from the Pandemic study by Fry et al. Exposed agents face a certain user-defined probability of becoming infected (see section on default parameters).
+I assume that the infected agent meets a number randomly drawn agents from their workplace as well as a number of randomly drawn agents from the population at large. The number of meetings is determined for each infected agent by drawing an observation from the interaction data set from the Pandemic study by [Krepac et al](https://www.medrxiv.org/content/10.1101/2020.02.16.20023754v2). Exposed agents face a certain user-defined probability of becoming infected (see section on default parameters).
 
 I assume that infected agents also expose *everyone* from their own household (at least in the baseline scenario with no interventions). Exposed household members also face a user-defined probability of becoming infectious. For convenience this exposure is done on day 1 of the infection, so this probability should be thought of as the total probability that an exposed household member gets infected throughout the infectious period.
 
@@ -30,32 +32,32 @@ The next day the newly infected agents are added to the list of disease-spreader
 
 ![Agent status](etc/status.png)
 
-This means that as the disease progresses, the number of susceptible individuals in the population, but also in individual households and workplaces will decrease, and the disease will naturally slow down at some point (note: this will tend to happen earlier because of the compartmentalisation of agents into households and workplaces compared to a simulation without this complication).
+This means that as the disease progresses, the number of susceptible individuals in the population, but also in individual households and workplaces will decrease, and the disease will naturally slow down at some point (note: this will tend to happen earlier because of the compartmentalization of agents into households and workplaces compared to a simulation without this complication).
 
 Throughout the simulation a record is kept of who infected who when. This allows us to compute the **effective average reproduction number** at each time point.
 
 The basic interaction rules described above can be altered by specifying a disease-preventing non-pharmaceutical intervention, which I will cal 'policies' for short. 
 
-The list of available policies is given below. It is the same set of interventions as in Kucharski et al.
+The list of available policies is given below. It is the same set of interventions as in [Kucharski et al](https://www.medrxiv.org/content/10.1101/2020.04.23.20077024v1).
 
-* **no_measures** - the baselien scenario.
+* **no_measures** - the baseline scenario.
 * **isolation_only** - individuals who test positive are isolated and can no longer infect. Only a fraction of infectious agents will get tested each day.
 * **hh_quarantine_only** - in addition to the above, individuals in the household of the ones who tested positive are traced, tested and isolated if needed (i.e. they don't contribute to spreading the infection further).
 * **hh_work_only** - as above plus same treatment of coworkers.
 * **isolation_manual_tracing_met_only** - all contacts are traced (household, work and other) as long as they were contact known to the infected individual beforehand (this is an adjustable parameter). The idea is that in manual tracing you cannot trace stranger.
 * **isolation_manual_tracing_met_limit** - same as above but also imposing a hard limit on number of social interaction outside the household or work (akin to social distancing measures)
 * **isolation_manual_tracing** - assume every contact can be traced (including those that were strangers to the infected individual)
-* **cell_phone** - tracingn using smartphone app. Same as isolation_manual_tracing (phone apps allow to trace strangers) but limited by number of people owning a phone.
+* **cell_phone** - tracing using smartphone app. Same as isolation_manual_tracing (phone apps allow to trace strangers) but limited by number of people owning a phone.
 * **cell_phone_met_limit** - same as above plus a hard limit on outside of work and home interactions.
 * **pop_testing** - random testing on a certain fraction of the population each day and isolation of those who tested positive only (a la Romer)
-* **pt_extra** - as far as I understand an umbrella for any intervention that reduces the chance of infection given exposure (e.g. mandatory mask wearing). The degree of reduction is a paramter in the model.
+* **pt_extra** - as far as I understand an umbrella for any intervention that reduces the chance of infection given exposure (e.g. mandatory mask wearing). The degree of reduction is a parameter in the model.
 
 # Possible Future Extensions
 
-Obviously some aspects of diease spread are simplified in this model. However some complications can be introduced relatively easily. Namely the duration of the disease is currently fixed but can be made variable and dependent on age. SIR groups can be agumented with additional status groups to model hospital admission, ICU care, death or lose of immmunity (and the transition between groups can be made dependent on age).
+Obviously some aspects of disease spread are simplified in this model. However some complications can be introduced relatively easily. Namely the duration of the disease is currently fixed but can be made variable and dependent on age. SIR groups can be augmented with additional status groups to model hospital admission, ICU care, death or lose of immunity (and the transition between groups can be made dependent on age).
 
 # Code Structure
-The main functions of the model can be found in `R/model_abm_functions.R`. The file `R/plot_abm_functions.R` contains some auxiliery functions related to plotting. `R/model_functions.R` contains the original unaltered code by Kucharski et al. For any function type `?func_name` for a short (really short) description of what it does (provided that you have loaded the `docstring` package).
+The main functions of the model can be found in `R/model_abm_functions.R`. The file `R/plot_abm_functions.R` contains some auxiliary functions related to plotting. `R/model_functions.R` contains the original unaltered code by [Kucharski et al](https://www.medrxiv.org/content/10.1101/2020.04.23.20077024v1). For any function type `?func_name` for a short (really short) description of what it does (provided that you have loaded the `docstring` package).
 
 The following R libraries are required to run the code (see detailed info about versions in the end of the readme):
 
@@ -71,7 +73,7 @@ library(docstring)
 TODO: make docker image?
 
 # Example
-I will give a short example of how to use the model and the code. It is the same one that can be foun in the file `scripts/contact_abm_model.R`
+I will give a short example of how to use the model and the code. It is the same one that can be found in the file `scripts/contact_abm_model.R`
 
 ## Defining social behaviour of each age group
 
@@ -147,7 +149,7 @@ simulation_baseline <- simulate_pandemic_policy_sequence(
 ```
 The code is somewhat time consuming, with this simulation loop taking around 11-12 minutes on my personal laptop.
 
-The resulting data allows us to plot the different **SIR** groups throught time:
+The resulting data allows us to plot the different **SIR** groups through time:
 
 ![SIR baseline](etc/sir_baseline.png)
 
@@ -161,7 +163,7 @@ Finally we can plot the effective reproduction number at each day (the plot is n
 
 ## Simulating the effect of different interventions
 
-To compare different interventions, I will run one simulation for each intervention scneario, where first the disease spreads unchekced for $20$ days and then the intervention is put in place for $100$ days:
+To compare different interventions, I will run one simulation for each intervention scenario, where first the disease spreads unchecked for $20$ days and then the intervention is put in place for $100$ days:
 
 ```
 simulation_all_scenarios <- c(
@@ -188,13 +190,13 @@ We can now compare the total number of infected (with possible implications for 
 
 ![Infected all scenarios](etc/i_all_scenarios.png)
 
-The plot clearly shows that some policies are much more effective than others and some can even lead to disease erradication in these simulations. This is furthers confirmed by looking at $R_t$ for each simulatuion and noting that it falls well below $1$ for some of them (the plot is noisy at times because of the low number of infected agents at the beginning and end of disease spread):
+The plot clearly shows that some policies are much more effective than others and some can even lead to disease eradication in these simulations. This is furthers confirmed by looking at $R_t$ for each simulation and noting that it falls well below $1$ for some of them (the plot is noisy at times because of the low number of infected agents at the beginning and end of disease spread):
 
 ![Disease reproduction all scnearios](etc/rt_all_scenarios.png)
 
 ## Multiple simulations and non-trivial policy schedules
 
-The above plots show the results of running the simulation only once per scenario. Since there is inherent randomness in such models, it is better to conduct several simultions and average the results. This can be done through the `simulate_pandemic_policy_sequence_ntimes` function, which as the name suggests is just a wrapper aroung `simulate_pandemic_policy_sequence` that repeats the simulation for a specified number of times.
+The above plots show the results of running the simulation only once per scenario. Since there is inherent randomness in such models, it is better to conduct several simulations and average the results. This can be done through the `simulate_pandemic_policy_sequence_ntimes` function, which as the name suggests is just a wrapper around `simulate_pandemic_policy_sequence` that repeats the simulation for a specified number of times.
 
 ```
 simulation_specific_policy <- simulate_pandemic_policy_sequence_ntimes(
